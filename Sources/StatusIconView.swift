@@ -4,11 +4,13 @@ import QuartzCore
 /// WindowServer animates the circle independently of status queries and menu tracking.
 final class StatusIconView: NSView {
     private let outer = CALayer()
-    private let track = CAShapeLayer()
+    private let trackLeft = CAShapeLayer()
     private let battery = CAShapeLayer()
+    private let trackRight = CAShapeLayer()
+    private let volume = CAShapeLayer()
     private let sweep = CAShapeLayer()
     private let center = CALayer()
-    private let dots = (0..<4).map { _ in CAShapeLayer() }
+    private let dots = (0..<StatusGlyph.allCases.count).map { _ in CAShapeLayer() }
     private var status: SystemStatus?
     private var dotLayout = DotLayout()
     private var reducedMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
@@ -19,15 +21,14 @@ final class StatusIconView: NSView {
         layerContentsRedrawPolicy = .never
         layer?.addSublayer(outer)
         layer?.addSublayer(center)
-        [track, battery, sweep].forEach { shape in
+        // One arc, one layer: a shared path would mix both segments in strokeStart/strokeEnd.
+        for shape in [trackLeft, battery, trackRight, volume, sweep] {
             shape.frame = NSRect(origin: .zero, size: DuoIcon.size)
             shape.fillColor = nil
             shape.lineWidth = DuoIcon.strokeWidth
             shape.lineCap = .round
-            let path = CGMutablePath()
-            path.addArc(center: DuoIcon.center, radius: DuoIcon.radius,
-                        startAngle: 210 * .pi/180, endAngle: -30 * .pi/180, clockwise: true)
-            shape.path = path
+            shape.strokeStart = 0
+            shape.strokeEnd = 1
             outer.addSublayer(shape)
         }
         sweep.opacity = 0
@@ -65,18 +66,29 @@ final class StatusIconView: NSView {
     private func render(_ value: SystemStatus, animated: Bool) {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             let color = NSColor.labelColor.usingColorSpace(.deviceRGB) ?? .black
-            let green = NSColor(calibratedRed: 0.18, green: 0.80, blue: 0.38, alpha: 1)
-            let ring = value.battery.lowPowerMode ? NSColor.systemYellow : (value.battery.connectedToPower ? green : color)
-            CATransaction.begin(); CATransaction.setDisableActions(true)
-            transition(track, "strokeColor", to: ring.withAlphaComponent(0.20).cgColor, animated: animated)
-            transition(battery, "strokeColor", to: ring.cgColor, animated: animated)
-            transition(battery, "strokeEnd", to: CGFloat(value.battery.percent ?? 0)/100, animated: animated)
-            sweep.strokeColor = ring.blended(withFraction: 0.7, of: .white)?.cgColor
+            let charging: CGFloat = value.battery.connectedToPower ? 1 : 0
+            let ring = DuoIcon.ringColor(status: value, base: color, charging: charging)
+            let level = DuoIcon.volumeColor(base: color)
             let visible = dotLayout.visible
+            let geometry = DuoIcon.RingGeometry(dotCount: visible.count)
+            let leftPath = DuoIcon.arcPath(from: geometry.leftStart, to: geometry.leftEnd)
+            let rightPath = DuoIcon.arcPath(from: geometry.rightStart, to: geometry.rightEnd)
+            CATransaction.begin(); CATransaction.setDisableActions(true)
+            trackLeft.path = leftPath; battery.path = leftPath
+            trackRight.path = rightPath; volume.path = rightPath
+            sweep.path = leftPath
+            transition(trackLeft, "strokeColor", to: ring.withAlphaComponent(0.20).cgColor, animated: animated)
+            transition(battery, "strokeColor", to: ring.cgColor, animated: animated)
+            transition(trackRight, "strokeColor", to: level.withAlphaComponent(0.20).cgColor, animated: animated)
+            transition(volume, "strokeColor", to: level.cgColor, animated: animated)
+            transition(battery, "strokeEnd", to: CGFloat(value.battery.percent ?? 0)/100, animated: animated)
+            let outputLevel = value.audio.muted == true ? 0 : (value.audio.volume ?? 0)
+            transition(volume, "strokeEnd", to: CGFloat(outputLevel)/100, animated: animated)
+            sweep.strokeColor = ring.blended(withFraction: 0.7, of: .white)?.cgColor
             for (index, dot) in dots.enumerated() {
                 dot.isHidden = index >= visible.count
                 guard index < visible.count else { continue }
-                let angle = (270 + (CGFloat(index)-CGFloat(visible.count-1)/2)*20) * .pi/180
+                let angle = (270 + (CGFloat(index)-CGFloat(visible.count-1)/2)*DuoIcon.dotPitch) * .pi/180
                 let point = CGPoint(x: DuoIcon.center.x+DuoIcon.radius*cos(angle),
                                     y: DuoIcon.center.y+DuoIcon.radius*sin(angle))
                 let diameter = DuoIcon.dotDiameter
@@ -129,6 +141,7 @@ final class StatusIconView: NSView {
 
     private func animateCharging() {
         guard !reducedMotion else { return }
+        // The sweep rides the left (battery) arc, so its fraction keeps the old meaning.
         let percent = CGFloat(status?.battery.percent ?? 0)/100
         let end = CABasicAnimation(keyPath: "strokeEnd")
         end.fromValue = 0; end.toValue = percent
@@ -140,6 +153,6 @@ final class StatusIconView: NSView {
         sweep.add(group, forKey: "charging")
     }
     func stopAnimations() {
-        ([outer, center, track, battery, sweep] + dots).forEach { $0.removeAllAnimations() }
+        ([outer, center, trackLeft, battery, trackRight, volume, sweep] + dots).forEach { $0.removeAllAnimations() }
     }
 }

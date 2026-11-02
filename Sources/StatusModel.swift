@@ -102,6 +102,8 @@ struct AudioState: Equatable {
     var headphoneNames: [String] = []
     var muted: Bool?
     var volume: Int?
+    /// Any input device is being used by some process (CoreAudio HAL, no microphone permission needed).
+    var micInUse = false
     var headphoneActive: Bool { !headphoneNames.isEmpty }
     var headphoneTitle: String { headphoneActive ? headphoneNames.joined(separator: "、") : "未连接" }
     var soundTitle: String {
@@ -109,16 +111,25 @@ struct AudioState: Equatable {
         if let volume { return "\(volume)%" }
         return muted == false ? "未静音" : "设备不提供音量状态"
     }
+    var volumeSummary: String {
+        if muted == true { return "已静音" }
+        if let volume { return "音量 \(volume)%" }
+        return "音量不可用"
+    }
 }
 
 enum StatusGlyph: String, CaseIterable {
-    case vpn, headphones, mute, focus
+    case vpn, headphones, mute, focus, lowPowerMode, microphone, thermal, powerAdapter
     var title: String {
         switch self {
         case .vpn: return "VPN"
         case .headphones: return "耳机"
         case .mute: return "静音"
         case .focus: return "专注"
+        case .lowPowerMode: return "低电量模式"
+        case .microphone: return "麦克风"
+        case .thermal: return "过热"
+        case .powerAdapter: return "外接电源"
         }
     }
     var symbol: String {
@@ -127,6 +138,10 @@ enum StatusGlyph: String, CaseIterable {
         case .headphones: return "headphones"
         case .mute: return "speaker.slash.fill"
         case .focus: return "moon.fill"
+        case .lowPowerMode: return "bolt.fill"
+        case .microphone: return "mic.fill"
+        case .thermal: return "thermometer.high"
+        case .powerAdapter: return "powerplug"
         }
     }
     func isActive(in status: SystemStatus) -> Bool {
@@ -135,6 +150,10 @@ enum StatusGlyph: String, CaseIterable {
         case .headphones: return status.audio.headphoneActive
         case .mute: return status.audio.muted == true
         case .focus: return status.focus.isActive
+        case .lowPowerMode: return status.battery.lowPowerMode
+        case .microphone: return status.audio.micInUse
+        case .thermal: return status.thermal == .serious || status.thermal == .critical
+        case .powerAdapter: return status.battery.connectedToPower
         }
     }
     var label: String {
@@ -143,6 +162,10 @@ enum StatusGlyph: String, CaseIterable {
         case .headphones: return "耳机已连接"
         case .mute: return "已静音"
         case .focus: return "专注已开启"
+        case .lowPowerMode: return "低电量模式已开启"
+        case .microphone: return "麦克风使用中"
+        case .thermal: return "散热受限，性能降低"
+        case .powerAdapter: return "已接电源"
         }
     }
 }
@@ -153,16 +176,11 @@ struct SystemStatus: Equatable {
     var vpn = VPNState()
     var audio = AudioState()
     var focus: FocusState = .unavailable("需要读取系统专注状态")
-    var glyphs: [StatusGlyph] {
-        var items: [StatusGlyph] = []
-        if vpn.active { items.append(.vpn) }
-        if audio.headphoneActive { items.append(.headphones) }
-        if audio.muted == true { items.append(.mute) }
-        if focus.isActive { items.append(.focus) }
-        return items
-    }
+    var thermal: ProcessInfo.ThermalState = .nominal
+    var glyphs: [StatusGlyph] { StatusGlyph.allCases.filter { $0.isActive(in: self) } }
     var accessibilitySummary: String {
-        (["DuoBar", "电量 \(battery.title)", wifi.title] + glyphs.map(\.label)).joined(separator: "，")
+        (["DuoBar", "电量 \(battery.title)", audio.volumeSummary, wifi.title] + glyphs.map(\.label))
+            .joined(separator: "，")
     }
     static func preview() -> SystemStatus {
         var s = SystemStatus()

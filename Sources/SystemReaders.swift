@@ -99,6 +99,12 @@ enum SystemReaders {
         for device in devices {
             let alive: UInt32 = value(device, kAudioDevicePropertyDeviceIsAlive) ?? 0
             guard alive != 0 else { continue }
+            // An input device that is running somewhere means some process is recording.
+            let inputStreams: [AudioStreamID] = values(device, kAudioDevicePropertyStreams, scope: kAudioDevicePropertyScopeInput)
+            if !inputStreams.isEmpty {
+                let running: UInt32 = value(device, kAudioDevicePropertyDeviceIsRunningSomewhere) ?? 0
+                if running != 0 { result.micInUse = true }
+            }
             let streams: [AudioStreamID] = values(device, kAudioDevicePropertyStreams, scope: kAudioDevicePropertyScopeOutput)
             guard !streams.isEmpty else { continue }
             let name = string(device, kAudioObjectPropertyName) ?? "耳机"

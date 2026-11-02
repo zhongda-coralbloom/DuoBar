@@ -8,13 +8,79 @@ enum DuoIcon {
     static let dotDiameter: CGFloat = 3.12
     static let radius: CGFloat = (outerDiameter - strokeWidth) / 2
     static let center = NSPoint(x: size.width / 2, y: size.height / 2)
+    static let dotPitch: CGFloat = 20
+    static let lowBatteryThreshold = 20
+
+    /// The ring is split in two mirrored arcs: battery on the left, volume on the right.
+    /// The bottom gap widens with the visible dot count so the dots never touch an arc.
+    struct RingGeometry {
+        static let topGapHalf: CGFloat = 8
+        static let bottomMargin: CGFloat = 10
+        let dotCount: Int
+
+        init(dotCount: Int) { self.dotCount = dotCount }
+
+        var halfSpan: CGFloat { dotCount <= 1 ? 9 : CGFloat(dotCount - 1) * 10 + 9 }
+        // Left arc runs from the lower left up to the upper left (clockwise, through 180 degrees).
+        var leftStart: CGFloat { 270 - halfSpan - Self.bottomMargin }
+        var leftEnd: CGFloat { 90 + Self.topGapHalf }
+        // Right arc runs from the lower right up to the upper right (counter-clockwise, through 0).
+        // The end deliberately exceeds 360 so the fill fraction grows monotonically.
+        var rightStart: CGFloat { 270 + halfSpan + Self.bottomMargin }
+        var rightEnd: CGFloat { 450 - Self.topGapHalf }
+
+        func leftFill(_ fraction: CGFloat) -> CGFloat { leftStart + (leftEnd - leftStart) * clamp(fraction) }
+        func rightFill(_ fraction: CGFloat) -> CGFloat { rightStart + (rightEnd - rightStart) * clamp(fraction) }
+        private func clamp(_ value: CGFloat) -> CGFloat { max(0, min(1, value)) }
+        var bottomGap: CGFloat { 2 * (halfSpan + Self.bottomMargin) }
+    }
+
+    static let chargingGreen = NSColor(calibratedRed: 0.18, green: 0.80, blue: 0.38, alpha: 1)
+    static let lowBatteryRed = NSColor(calibratedRed: 0.95, green: 0.23, blue: 0.19, alpha: 1)
+
+    /// Below 20 percent and running on battery: the only state that overrides the usual colours.
+    static func isLowBattery(_ battery: BatteryState) -> Bool {
+        guard battery.present, let percent = battery.percent else { return false }
+        return percent < lowBatteryThreshold && !battery.connectedToPower
+    }
+
+    /// Single source of truth for the battery arc colour. Charging keeps the author's yellow
+    /// low power override; the red warning sits above both because it is the urgent case.
+    static func ringColor(status: SystemStatus, base: NSColor, charging: CGFloat) -> NSColor {
+        if isLowBattery(status.battery) { return lowBatteryRed }
+        if status.battery.lowPowerMode { return .systemYellow }
+        if status.battery.connectedToPower {
+            return base.blended(withFraction: charging, of: chargingGreen) ?? chargingGreen
+        }
+        return base
+    }
+
+    static func volumeColor(base: NSColor) -> NSColor { base }
+
+    /// Readable role for `--diagnose`; mirrors `ringColor` without exposing NSColor.
+    static func ringRole(status: SystemStatus) -> String {
+        if isLowBattery(status.battery) { return "red" }
+        if status.battery.lowPowerMode { return "yellow" }
+        if status.battery.connectedToPower { return "green" }
+        return "label"
+    }
+
+    /// One arc, one path: a shared path would let `strokeEnd` mix both segments.
+    static func arcPath(from: CGFloat, to: CGFloat) -> CGPath {
+        let path = CGMutablePath()
+        path.addArc(center: center, radius: radius, startAngle: from * .pi / 180,
+                    endAngle: to * .pi / 180, clockwise: to < from)
+        return path
+    }
 
     static func image(status: SystemStatus, layout: DotLayout = DotLayout(), template: Bool = true) -> NSImage {
         let image = NSImage(size: size, flipped: false) { rect in
             draw(status: status, layout: layout, in: rect, color: .black)
             return true
         }
+        // A template image is recoloured by the system, which would erase the warning colours.
         image.isTemplate = template && !status.battery.connectedToPower && !status.battery.lowPowerMode
+            && !isLowBattery(status.battery)
         return image
     }
 
@@ -31,34 +97,39 @@ enum DuoIcon {
         let strokeWidth = Self.strokeWidth
         let center = Self.center
         let radius = Self.radius
-        // The bottom dots and battery stroke share one circular path.
-        let start: CGFloat = 210
-        let sweep: CGFloat = -240
+        let geometry = RingGeometry(dotCount: dots.count)
         let base = color.usingColorSpace(.deviceRGB) ?? color
-        let green = NSColor(calibratedRed: 0.18, green: 0.80, blue: 0.38, alpha: 1)
-        let ringColor = status.battery.lowPowerMode ? NSColor.systemYellow : (base.blended(withFraction: frame.charging, of: green) ?? green)
+        let ringStroke = Self.ringColor(status: status, base: base, charging: frame.charging)
+        let volumeStroke = Self.volumeColor(base: base)
         if components == .all {
             ctx.saveGState()
             ctx.translateBy(x: center.x, y: center.y); ctx.rotate(by: frame.ringAngle)
             ctx.translateBy(x: -center.x, y: -center.y)
-            func arc(_ fraction: CGFloat, alpha: CGFloat) {
-                guard fraction > 0 else { return }
-                ringColor.withAlphaComponent(alpha).setStroke()
+            func arc(_ from: CGFloat, _ to: CGFloat, _ color: NSColor, alpha: CGFloat) {
+                color.withAlphaComponent(alpha).setStroke()
                 let path = NSBezierPath()
                 path.lineWidth = strokeWidth
                 path.lineCapStyle = .round
-                path.appendArc(withCenter: center, radius: radius, startAngle: start,
-                               endAngle: start + sweep * fraction, clockwise: true)
+                path.appendArc(withCenter: center, radius: radius, startAngle: from,
+                               endAngle: to, clockwise: to < from)
                 path.stroke()
             }
-            arc(1, alpha: 0.20)
-            if let percent = frame.percent { arc(percent / 100, alpha: 1) }
+            // Tracks first, then the two independent fills.
+            arc(geometry.leftStart, geometry.leftEnd, ringStroke, alpha: 0.20)
+            arc(geometry.rightStart, geometry.rightEnd, volumeStroke, alpha: 0.20)
+            if let percent = frame.percent, percent > 0 {
+                arc(geometry.leftStart, geometry.leftFill(percent / 100), ringStroke, alpha: 1)
+            }
+            if let volume = frame.volume, volume > 0 {
+                arc(geometry.rightStart, geometry.rightFill(volume / 100), volumeStroke, alpha: 1)
+            }
             if let phase = frame.chargeSweep, let percent = frame.percent {
-                let length = sweep * percent / 100
-                let end = start + length * phase
+                let sweep = geometry.leftEnd - geometry.leftStart
+                let end = geometry.leftStart + sweep * percent / 100 * phase
                 let path = NSBezierPath(); path.lineWidth = strokeWidth; path.lineCapStyle = .round
-                ringColor.blended(withFraction: 0.7, of: .white)?.withAlphaComponent(sin(.pi*phase)*0.8).setStroke()
-                path.appendArc(withCenter: center, radius: radius, startAngle: min(start, end+22), endAngle: end, clockwise: true)
+                ringStroke.blended(withFraction: 0.7, of: .white)?.withAlphaComponent(sin(.pi*phase)*0.8).setStroke()
+                path.appendArc(withCenter: center, radius: radius, startAngle: min(geometry.leftStart, end+22),
+                               endAngle: end, clockwise: true)
                 path.stroke()
             }
             ctx.restoreGState()
@@ -77,7 +148,7 @@ enum DuoIcon {
                 let active = frame.active[glyph] ?? 0
                 let diameter = Self.dotDiameter
                 color.withAlphaComponent(0.50 + 0.50*active).setFill()
-                let angle = (270 + (CGFloat(index) - CGFloat(dots.count - 1) / 2) * 20) * .pi / 180 + frame.ringAngle
+                let angle = (270 + (CGFloat(index) - CGFloat(dots.count - 1) / 2) * dotPitch) * .pi / 180 + frame.ringAngle
                 let point = NSPoint(x: center.x + radius * cos(angle), y: center.y + radius * sin(angle))
                 NSBezierPath(ovalIn: NSRect(x: point.x - diameter / 2, y: point.y - diameter / 2,
                                            width: diameter, height: diameter)).fill()

@@ -99,6 +99,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationWillTerminate(_ notification: Notification) { canvas.stopAnimations(); monitor.stop() }
 }
 
+private func thermalName(_ state: ProcessInfo.ThermalState) -> String {
+    switch state {
+    case .nominal: return "nominal"
+    case .fair: return "fair"
+    case .serious: return "serious"
+    case .critical: return "critical"
+    @unknown default: return "unknown"
+    }
+}
+
 if CommandLine.arguments.contains("--diagnose") {
     let status = SystemStatus(battery: SystemReaders.battery(),
                               wifi: SystemReaders.wifi(client: .shared(), route: .unknown),
@@ -119,6 +129,11 @@ if CommandLine.arguments.contains("--diagnose") {
         "headphoneCount": status.audio.headphoneNames.count,
         "muteAvailable": status.audio.muted != nil,
         "muted": status.audio.muted as Any? ?? NSNull(),
+        "volumePercent": status.audio.volume as Any? ?? NSNull(),
+        "microphoneInUse": status.audio.micInUse,
+        "thermalState": thermalName(status.thermal),
+        "lowBatteryRed": DuoIcon.isLowBattery(status.battery),
+        "ringColorRole": DuoIcon.ringRole(status: status),
         "focus": status.focus.title,
         "focusAuthorization": INFocusStatusCenter.default.authorizationStatus.rawValue,
         "focusSharedValue": INFocusStatusCenter.default.focusStatus.isFocused as Any? ?? NSNull(),
