@@ -64,6 +64,8 @@ final class SystemMonitor: NSObject, CWEventDelegate {
         bindOutput()
         observers.append(NotificationCenter.default.addObserver(forName: .NSProcessInfoPowerStateDidChange,
             object: nil, queue: .main) { [weak self] _ in self?.refresh() })
+        observers.append(NotificationCenter.default.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification,
+            object: nil, queue: .main) { [weak self] _ in self?.refresh() })
         let nc = NSWorkspace.shared.notificationCenter
         observers.append(nc.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
             self?.sleeping = true; self?.timer?.invalidate(); self?.focusTimer?.invalidate()
@@ -127,9 +129,11 @@ final class SystemMonitor: NSObject, CWEventDelegate {
             value.vpn = SystemReaders.vpn()
             value.audio = SystemReaders.audio()
             value.focus = SystemReaders.focus()
+            value.thermal = ProcessInfo.processInfo.thermalState
             DispatchQueue.main.async {
                 self.sampling = false
                 self.bindOutput()
+                self.bindInputs()
                 if value != self.status {
                     self.status = value
                     self.onChange?(value)
@@ -152,17 +156,43 @@ final class SystemMonitor: NSObject, CWEventDelegate {
         let system = AudioObjectID(kAudioObjectSystemObject)
         let device: AudioDeviceID? = SystemReaders.value(system, kAudioHardwarePropertyDefaultOutputDevice)
         guard device != watchedOutput else { return }
-        for (object, original, block) in audioListeners where object != system {
-            var address = original
-            AudioObjectRemovePropertyListenerBlock(object, &address, .main, block)
+        if let old = watchedOutput {
+            for (object, original, block) in audioListeners where object == old {
+                var address = original
+                AudioObjectRemovePropertyListenerBlock(object, &address, .main, block)
+            }
+            audioListeners.removeAll { $0.0 == old }
         }
-        audioListeners.removeAll { $0.0 != system }
         watchedOutput = device
         guard let device, device != kAudioObjectUnknown else { return }
         for selector in [kAudioDevicePropertyMute, kAudioDevicePropertyVolumeScalar, kAudioDevicePropertyDataSource] {
             for element: UInt32 in [0, 1, 2] {
                 listen(device, SystemReaders.address(selector, scope: kAudioDevicePropertyScopeOutput, element: element))
             }
+        }
+    }
+
+    /// Microphone use is a per-device property, so input devices are watched separately.
+    /// Idempotent: it only reconciles the running-somewhere listeners, never the output ones.
+    private func bindInputs() {
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        let devices: [AudioDeviceID] = SystemReaders.values(system, kAudioHardwarePropertyDevices)
+        var inputs: Set<AudioDeviceID> = []
+        for device in devices {
+            let streams: [AudioStreamID] = SystemReaders.values(device, kAudioDevicePropertyStreams,
+                                                               scope: kAudioDevicePropertyScopeInput)
+            if !streams.isEmpty { inputs.insert(device) }
+        }
+        let mic = kAudioDevicePropertyDeviceIsRunningSomewhere
+        let watched = Set(audioListeners.filter { $0.1.mSelector == mic }.map { $0.0 })
+        guard inputs != watched else { return }
+        for (object, original, block) in audioListeners where original.mSelector == mic && !inputs.contains(object) {
+            var address = original
+            AudioObjectRemovePropertyListenerBlock(object, &address, .main, block)
+        }
+        audioListeners.removeAll { $0.1.mSelector == mic && !inputs.contains($0.0) }
+        for device in inputs where !watched.contains(device) {
+            listen(device, SystemReaders.address(mic))
         }
     }
 

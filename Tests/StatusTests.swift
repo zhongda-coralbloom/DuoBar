@@ -28,9 +28,12 @@ struct StatusTests {
         if case .unavailable = FocusState.shared(nil) { check(true, "unshared focus stays unknown") }
         else { check(false, "unshared focus must not become off") }
         check(SystemStatus.preview().glyphs == [.vpn, .headphones, .mute, .focus], "four active states in consistent order")
-        check(DotLayout().visible == StatusGlyph.allCases, "all four dots stay visible when inactive")
+        check(DotLayout().visible == [.vpn, .headphones, .mute, .focus], "a fresh layout shows only the original four dots")
+        check(DotLayout.defaultHidden == [.lowPowerMode, .microphone, .thermal, .powerAdapter],
+              "the four new dots are hidden until the user opts in")
         let normalized = DotLayout(order: [.focus, .focus, .vpn])
-        check(normalized.order == [.focus, .vpn, .headphones, .mute], "partial or duplicated preference order is repaired")
+        check(normalized.order == [.focus, .vpn, .headphones, .mute, .lowPowerMode, .microphone, .thermal, .powerAdapter],
+              "partial or duplicated preference order is repaired")
         var layout = DotLayout()
         layout.move(.vpn, by: 1)
         check(layout.visible == [.headphones, .vpn, .mute, .focus], "reorder changes dot positions")
@@ -48,8 +51,42 @@ struct StatusTests {
         check(restored.layout.visible == [.headphones, .focus, .mute], "order and hidden states survive reload")
         restored.setVisible(true, for: .vpn)
         check(restored.layout.visible == [.vpn, .headphones, .focus, .mute], "reshown dot retains its chosen order")
+        let legacySuite = "com.corale.duobar.tests.legacy." + UUID().uuidString
+        let legacy = UserDefaults(suiteName: legacySuite)!
+        defer { legacy.removePersistentDomain(forName: legacySuite) }
+        legacy.set([], forKey: "hiddenDots")
+        let upgraded = DotPreferences(defaults: legacy)
+        check(upgraded.layout.visible == [.vpn, .headphones, .mute, .focus],
+              "an archive written before the new dots existed never reveals them")
+        check(upgraded.layout.hidden == DotLayout.defaultHidden, "the upgrade hides the new dots and keeps the old choices")
+        let freshSuite = "com.corale.duobar.tests.fresh." + UUID().uuidString
+        let freshDefaults = UserDefaults(suiteName: freshSuite)!
+        defer { freshDefaults.removePersistentDomain(forName: freshSuite) }
+        check(DotPreferences(defaults: freshDefaults).layout.visible == [.vpn, .headphones, .mute, .focus],
+              "a fresh install shows exactly four dots")
         check(!StatusGlyph.focus.isActive(in: unknown), "unshared focus never lights a dot")
-        check(StatusGlyph.allCases.allSatisfy { $0.isActive(in: SystemStatus.preview()) }, "each active state lights its own dot")
+        var everyDot = SystemStatus()
+        everyDot.vpn.names = ["VPN"]
+        everyDot.audio.headphoneNames = ["AirPods"]
+        everyDot.audio.muted = true
+        everyDot.audio.micInUse = true
+        everyDot.focus = .active
+        everyDot.battery.present = true
+        everyDot.battery.percent = 90
+        everyDot.battery.externalPower = true
+        everyDot.battery.lowPowerMode = true
+        everyDot.thermal = .critical
+        check(StatusGlyph.allCases.allSatisfy { $0.isActive(in: everyDot) }, "each state lights its own dot")
+        check(Set(StatusGlyph.allCases.map(\.label)).count == StatusGlyph.allCases.count, "every dot has a distinct label")
+        check(StatusGlyph.allCases.allSatisfy { !$0.title.isEmpty && !$0.symbol.isEmpty },
+              "every dot has a title and a symbol")
+        var quiet = SystemStatus()
+        quiet.battery.present = true
+        quiet.battery.percent = 90
+        check(quiet.glyphs.isEmpty, "an idle Mac lights no dot")
+        check(quiet.accessibilitySummary.contains("电量 90%"), "the accessibility summary reports the battery")
+        quiet.audio.volume = 42
+        check(quiet.accessibilitySummary.contains("音量 42%"), "the accessibility summary reports the output level")
         let before = SystemStatus.preview()
         check(!before.shouldAnimate(from: before), "unchanged state does not animate")
         var changed = before; changed.battery.percent = 62

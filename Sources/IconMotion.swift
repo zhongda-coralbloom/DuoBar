@@ -2,6 +2,7 @@ import AppKit
 
 struct IconFrame {
     var percent: CGFloat?
+    var volume: CGFloat?
     var charging: CGFloat
     var ringAngle: CGFloat = 0
     var active: [StatusGlyph: CGFloat]
@@ -11,7 +12,10 @@ struct IconFrame {
     var chargePulse: CGFloat = 0
 
     static func steady(_ status: SystemStatus) -> IconFrame {
-        IconFrame(percent: status.battery.percent.map(CGFloat.init), charging: status.battery.connectedToPower ? 1 : 0,
+        // A muted output reads as zero even when the device still reports a volume scalar.
+        let volume = status.audio.muted == true ? 0 : status.audio.volume.map(CGFloat.init)
+        return IconFrame(percent: status.battery.percent.map(CGFloat.init), volume: volume,
+                  charging: status.battery.connectedToPower ? 1 : 0,
                   active: Dictionary(uniqueKeysWithValues: StatusGlyph.allCases.map { ($0, $0.isActive(in: status) ? 1 : 0) }))
     }
 }

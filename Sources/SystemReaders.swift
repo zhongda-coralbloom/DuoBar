@@ -99,6 +99,12 @@ enum SystemReaders {
         for device in devices {
             let alive: UInt32 = value(device, kAudioDevicePropertyDeviceIsAlive) ?? 0
             guard alive != 0 else { continue }
+            // An input device that is running somewhere means some process is recording.
+            let inputStreams: [AudioStreamID] = values(device, kAudioDevicePropertyStreams, scope: kAudioDevicePropertyScopeInput)
+            if !inputStreams.isEmpty {
+                let running: UInt32 = value(device, kAudioDevicePropertyDeviceIsRunningSomewhere) ?? 0
+                if running != 0 { result.micInUse = true }
+            }
             let streams: [AudioStreamID] = values(device, kAudioDevicePropertyStreams, scope: kAudioDevicePropertyScopeOutput)
             guard !streams.isEmpty else { continue }
             let name = string(device, kAudioObjectPropertyName) ?? "耳机"
@@ -127,6 +133,56 @@ enum SystemReaders {
         // Volume zero is a silent output even when a device exposes no mute switch.
         if volume == 0 { result.muted = true }
         return result
+    }
+
+    /// Writes the default output level. Tries the master channel first, then both stereo channels.
+    /// Returns false when the device exposes no writable volume.
+    @discardableResult
+    static func setVolume(_ percent: Int) -> Bool {
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        guard let device: AudioDeviceID = value(system, kAudioHardwarePropertyDefaultOutputDevice),
+              device != kAudioObjectUnknown else { return false }
+        let level = Float32(max(0, min(100, percent))) / 100
+        var written = false
+        var master = address(kAudioDevicePropertyVolumeScalar, scope: kAudioDevicePropertyScopeOutput)
+        if AudioObjectHasProperty(device, &master) {
+            var scalar = level
+            if AudioObjectSetPropertyData(device, &master, 0, nil, UInt32(MemoryLayout<Float32>.size), &scalar) == noErr {
+                written = true
+            }
+        }
+        if !written {
+            for element: UInt32 in [1, 2] {
+                var channel = address(kAudioDevicePropertyVolumeScalar, scope: kAudioDevicePropertyScopeOutput, element: element)
+                var scalar = level
+                if AudioObjectSetPropertyData(device, &channel, 0, nil, UInt32(MemoryLayout<Float32>.size), &scalar) == noErr {
+                    written = true
+                }
+            }
+        }
+        // Raising the level on a muted device implies the user wants to hear it.
+        if written { setMuted(false, device: device) }
+        return written
+    }
+
+    @discardableResult
+    static func setMuted(_ muted: Bool, device: AudioDeviceID? = nil) -> Bool {
+        var target = device
+        if target == nil {
+            let system = AudioObjectID(kAudioObjectSystemObject)
+            target = value(system, kAudioHardwarePropertyDefaultOutputDevice)
+        }
+        guard let target, target != kAudioObjectUnknown else { return false }
+        var didWrite = false
+        for element: UInt32 in [kAudioObjectPropertyElementMain, 1, 2] {
+            var selector = address(kAudioDevicePropertyMute, scope: kAudioDevicePropertyScopeOutput, element: element)
+            guard AudioObjectHasProperty(target, &selector) else { continue }
+            var flag: UInt32 = muted ? 1 : 0
+            if AudioObjectSetPropertyData(target, &selector, 0, nil, UInt32(MemoryLayout<UInt32>.size), &flag) == noErr {
+                didWrite = true
+            }
+        }
+        return didWrite
     }
 
     static func address(_ selector: AudioObjectPropertySelector, scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal,
