@@ -8,6 +8,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let panel = StatusPanel()
     private let monitor = SystemMonitor()
     private let preferences = DotPreferences()
+    private let wifi = WiFiController()
+    private lazy var wifiMenu = WiFiMenu(controller: wifi)
     private let canvas = StatusIconView()
     private var settings: SettingsController?
 
@@ -28,6 +30,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.menu.cancelTracking()
             DispatchQueue.main.async { SystemSettings.open(page) }
         }
+        panel.onRefresh = { [weak self] in self?.monitor.refresh() }
+        panel.onVolume = { [weak self] percent in
+            SystemReaders.setVolume(percent)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { self?.monitor.refresh() }
+        }
+        panel.wifiMenu = wifiMenu
+        wifiMenu.onRefresh = { [weak self] in self?.monitor.refresh() }
+        wifi.onAuthorizationChange = { [weak self] in self?.monitor.refresh() }
         menu.delegate = self
         menu.autoenablesItems = false
         let content = NSMenuItem(); content.view = panel; menu.addItem(content)
@@ -71,13 +81,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func update(_ state: SystemStatus) {
         renderIcon()
         item.button?.setAccessibilityLabel(state.accessibilitySummary)
-        // Deliberately no tracking area or hover expansion.
-        panel.update(state)
+        // Deliberately no tracking area or hover expansion on the icon itself.
+        panel.update(state, layout: preferences.layout)
         settings?.update(state)
     }
     func menuWillOpen(_ menu: NSMenu) {
         canvas.animateTurn()
-        panel.update(monitor.status)
+        panel.update(monitor.status, layout: preferences.layout)
         monitor.setMenuOpen(true)
     }
     func menuDidClose(_ menu: NSMenu) { monitor.setMenuOpen(false) }

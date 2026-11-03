@@ -10,8 +10,6 @@ final class SettingsController: NSWindowController, CLLocationManagerDelegate {
     private let focusStatus = NSTextField(wrappingLabelWithString: "")
     private let location = CLLocationManager()
     private let icon = LargeIconView()
-    private let wechatCopied = NSTextField(labelWithString: "")
-    private let emailCopied = NSTextField(labelWithString: "")
     var onRefresh: (() -> Void)?
 
     init(preferences: DotPreferences) {
@@ -76,27 +74,8 @@ final class SettingsController: NSWindowController, CLLocationManagerDelegate {
         stack.addArrangedSubview(actions)
         stack.addArrangedSubview(note("Wi-Fi 名称需定位权限，应用不请求地理坐标。专注状态未共享时，圆点保持灰色，详情标注未共享。"))
         addSeparator(stack)
-        stack.addArrangedSubview(heading("联系开发者 🌟"))
-        stack.addArrangedSubview(contactRow("小红书：", title: "一键前往", action: #selector(openXiaohongshu)))
-        stack.addArrangedSubview(contactRow("微信：", title: "nybbamboo", action: #selector(copyWeChat), feedback: wechatCopied))
-        stack.addArrangedSubview(contactRow("邮箱：", title: "nybbamboo@163.com", action: #selector(copyEmail), feedback: emailCopied))
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
         stack.addArrangedSubview(note("\(version) · 本地运行"))
-    }
-
-    private func contactRow(_ label: String, title: String, action: Selector, feedback: NSTextField? = nil) -> NSStackView {
-        let name = NSTextField(labelWithString: label)
-        name.widthAnchor.constraint(equalToConstant: 54).isActive = true
-        let row = NSStackView(views: [name, button(title, action)])
-        row.spacing = 8; row.alignment = .centerY
-        row.heightAnchor.constraint(equalToConstant: 24).isActive = true
-        if let feedback {
-            feedback.font = .systemFont(ofSize: 11)
-            feedback.textColor = .systemGreen
-            feedback.setAccessibilityLabel(label + "复制结果")
-            row.addArrangedSubview(feedback)
-        }
-        return row
     }
 
     private func rebuildDotRows() {
@@ -192,20 +171,6 @@ final class SettingsController: NSWindowController, CLLocationManagerDelegate {
     @objc private func openMenuBar() { SystemSettings.open(.menubar) }
     @objc private func requestLocation() { location.requestWhenInUseAuthorization() }
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) { onRefresh?() }
-
-    @objc private func openXiaohongshu() {
-        if let url = URL(string: "https://www.xiaohongshu.com/user/profile/5fd62d06000000000101e8b1") {
-            NSWorkspace.shared.open(url)
-        }
-    }
-    @objc private func copyWeChat() { copyContact("nybbamboo", feedback: wechatCopied) }
-    @objc private func copyEmail() { copyContact("nybbamboo@163.com", feedback: emailCopied) }
-    private func copyContact(_ value: String, feedback: NSTextField) {
-        NSPasteboard.general.clearContents()
-        if NSPasteboard.general.setString(value, forType: .string) {
-            feedback.stringValue = "已复制"
-        }
-    }
 
     @objc private func explainFocus() {
         let center = INFocusStatusCenter.default
